@@ -47,6 +47,11 @@ POS_STEP = 0.1
 VEL_STEP = 0.1
 MASS_STEP = 0.1
 
+# Distance-display settings
+# Physics still uses G=1 and dimensionless units.
+# This only controls how distances are labeled in the UI.
+DISTANCE_UNIT_NAME = "units"
+DISTANCE_UNIT_SCALE = 1.0
 
 # Runtime window values
 WIDTH = INITIAL_WIDTH
@@ -202,10 +207,6 @@ def make_new_body(index: int, spawn_pos: pygame.Vector2) -> Body:
     )
 
 
-# =========================
-# CAMERA / COORDS
-# =========================
-
 def compute_com(bodies: List[Body]) -> pygame.Vector2:
     total_mass = sum(b.mass for b in bodies if b.affects_others)
     if total_mass == 0:
@@ -217,6 +218,18 @@ def compute_com(bodies: List[Body]) -> pygame.Vector2:
             com += b.pos * b.mass
     return com / total_mass
 
+
+def format_distance(sim_units: float) -> str:
+    return f"{sim_units * DISTANCE_UNIT_SCALE:.4f} {DISTANCE_UNIT_NAME}"
+
+
+def distance_between(b1: Body, b2: Body) -> float:
+    return (b1.pos - b2.pos).length()
+
+
+# =========================
+# CAMERA / COORDS
+# =========================
 
 def world_to_screen(pos: pygame.Vector2, camera_center: pygame.Vector2, zoom: float) -> Tuple[int, int]:
     x = SIM_WIDTH // 2 + int((pos.x - camera_center.x) * zoom)
@@ -329,6 +342,31 @@ def draw_grid(screen, camera_center, zoom):
         pygame.draw.line(screen, GRID_COLOR, (sx1, sy1), (sx2, sy2), 1)
         y += spacing_world
 
+    return spacing_world
+
+
+def draw_grid_labels(screen, small_font, camera_center, zoom, spacing_world):
+    left = camera_center.x - SIM_WIDTH / (2 * zoom)
+    right = camera_center.x + SIM_WIDTH / (2 * zoom)
+    bottom = camera_center.y - HEIGHT / (2 * zoom)
+    top = camera_center.y + HEIGHT / (2 * zoom)
+
+    x = math.floor(left / spacing_world) * spacing_world
+    while x <= right:
+        sx, _ = world_to_screen(pygame.Vector2(x, bottom), camera_center, zoom)
+        if 0 <= sx <= SIM_WIDTH - 45:
+            label = small_font.render(f"{x:.2f}", True, MUTED_TEXT)
+            screen.blit(label, (sx + 2, HEIGHT - 24))
+        x += spacing_world
+
+    y = math.floor(bottom / spacing_world) * spacing_world
+    while y <= top:
+        _, sy = world_to_screen(pygame.Vector2(left, y), camera_center, zoom)
+        if 0 <= sy <= HEIGHT - 20:
+            label = small_font.render(f"{y:.2f}", True, MUTED_TEXT)
+            screen.blit(label, (4, sy + 2))
+        y += spacing_world
+
 
 def draw_trails(screen, trails, camera_center, zoom):
     for color, pts in trails:
@@ -375,7 +413,19 @@ def draw_button(screen, font, button):
     screen.blit(label, label_rect)
 
 
-def draw_sidebar(screen, font, small_font, buttons, selected_body, mode, paused, follow_com):
+def draw_sidebar(
+    screen,
+    font,
+    small_font,
+    buttons,
+    selected_body,
+    selected_idx,
+    bodies,
+    mode,
+    paused,
+    follow_com,
+    grid_spacing,
+):
     pygame.draw.rect(screen, SIDEBAR_BG, (SIM_WIDTH, 0, SIDEBAR_WIDTH, HEIGHT))
     pygame.draw.line(screen, (70, 80, 110), (SIM_WIDTH, 0), (SIM_WIDTH, HEIGHT), 2)
 
@@ -387,8 +437,9 @@ def draw_sidebar(screen, font, small_font, buttons, selected_body, mode, paused,
     draw_text(screen, small_font, f"Mode: {mode.upper()}", MUTED_TEXT, SIM_WIDTH + 20, header_y + 38)
     draw_text(screen, small_font, f"Paused: {paused}", MUTED_TEXT, SIM_WIDTH + 20, header_y + 62)
     draw_text(screen, small_font, f"Follow COM: {follow_com}", MUTED_TEXT, SIM_WIDTH + 20, header_y + 86)
+    draw_text(screen, small_font, f"Grid spacing: {format_distance(grid_spacing)}", MUTED_TEXT, SIM_WIDTH + 20, header_y + 110)
 
-    y0 = header_y + 130
+    y0 = header_y + 150
     draw_text(screen, font, "Selected Body", TEXT_COLOR, SIM_WIDTH + 20, y0)
 
     if selected_body is None:
@@ -417,7 +468,30 @@ def draw_sidebar(screen, font, small_font, buttons, selected_body, mode, paused,
             surf_rect = surf.get_rect(center=rect.center)
             screen.blit(surf, surf_rect)
 
-    help_y = y0 + 110 + 5 * 50 + 35
+    dist_y = y0 + 110 + 5 * 50 + 16
+    draw_text(screen, font, "Distances", TEXT_COLOR, SIM_WIDTH + 20, dist_y)
+
+    other_distances = []
+    if selected_idx is not None:
+        for i, b in enumerate(bodies):
+            if i == selected_idx:
+                continue
+            d = distance_between(selected_body, b)
+            other_distances.append((b.name, d))
+
+    other_distances.sort(key=lambda t: t[1])
+
+    for k, (name, d) in enumerate(other_distances[:5]):
+        draw_text(
+            screen,
+            small_font,
+            f"to {name}: {format_distance(d)}",
+            MUTED_TEXT,
+            SIM_WIDTH + 20,
+            dist_y + 32 + 24 * k,
+        )
+
+    help_y = dist_y + 32 + 24 * max(5, len(other_distances[:5])) + 18
     help_lines = [
         "Edit mode:",
         "  left-drag body to move",
@@ -432,7 +506,9 @@ def draw_sidebar(screen, font, small_font, buttons, selected_body, mode, paused,
         "  Up/Down change time scale",
     ]
     for i, line in enumerate(help_lines):
-        draw_text(screen, small_font, line, MUTED_TEXT, SIM_WIDTH + 20, help_y + 24 * i)
+        y = help_y + 24 * i
+        if y < HEIGHT - 24:
+            draw_text(screen, small_font, line, MUTED_TEXT, SIM_WIDTH + 20, y)
 
 
 # =========================
@@ -527,7 +603,7 @@ def main():
             camera_center = compute_com(active_bodies)
 
         header_y = 280
-        selected_section_y = header_y + 130
+        selected_section_y = header_y + 150
         param_start_y = selected_section_y + 110
 
         for event in pygame.event.get():
@@ -742,7 +818,9 @@ def main():
 
         screen.fill(BACKGROUND)
         pygame.draw.rect(screen, BACKGROUND, (0, 0, SIM_WIDTH, HEIGHT))
-        draw_grid(screen, camera_center, zoom)
+
+        grid_spacing = draw_grid(screen, camera_center, zoom)
+        draw_grid_labels(screen, small_font, camera_center, zoom, grid_spacing)
 
         if SHOW_TRAILS:
             draw_trails(screen, trails, camera_center, zoom)
@@ -753,11 +831,24 @@ def main():
         if selected_idx is not None and selected_idx < len(active_bodies):
             selected_body = active_bodies[selected_idx]
 
-        draw_sidebar(screen, font, small_font, buttons, selected_body, mode, paused, follow_com)
+        draw_sidebar(
+            screen,
+            font,
+            small_font,
+            buttons,
+            selected_body,
+            selected_idx,
+            active_bodies,
+            mode,
+            paused,
+            follow_com,
+            grid_spacing,
+        )
 
         draw_text(screen, small_font, f"zoom: {zoom:.1f}", MUTED_TEXT, 20, 20)
         draw_text(screen, small_font, f"time scale: {TIME_SCALE:.2f}", MUTED_TEXT, 20, 45)
-        draw_text(screen, small_font, "Left drag: move body | Right drag: pan | Wheel: zoom", MUTED_TEXT, 20, 70)
+        draw_text(screen, small_font, f"grid step: {format_distance(grid_spacing)}", MUTED_TEXT, 20, 70)
+        draw_text(screen, small_font, "Left drag: move body | Right drag: pan | Wheel: zoom", MUTED_TEXT, 20, 95)
 
         pygame.display.flip()
 
